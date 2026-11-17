@@ -105,9 +105,9 @@ def main():
         return
 
     rows = load_rows()
-    # Get tomorrow's date in IST timezone
+    # Fixed date extraction to match CSV format (YYYY-MM-DD)
     now = dt.datetime.now(ZoneInfo("Asia/Kolkata"))
-    tomorrow = (now + dt.timedelta(days=1)).isoformat()
+    tomorrow = (now + dt.timedelta(days=1)).date().isoformat()
     
     if tomorrow in rows:
         msg = build_message(rows[tomorrow])
