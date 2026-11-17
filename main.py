@@ -124,7 +124,7 @@ def background_scheduler():
             chat_id = os.environ.get("TELEGRAM_CHAT_ID")
             rows = load_rows()
             
-            tomorrow = (now + dt.timedelta(days=1)).isoformat()
+            tomorrow = (now + dt.timedelta(days=1)).date().isoformat()
             if tomorrow in rows:
                 msg = build_message(rows[tomorrow])
                 if token and chat_id:
@@ -182,10 +182,7 @@ def main():
         with st.form("telegram_form"):
             st.info("ನಿಮ್ಮ ಬಾಟ್ ಟೋಕನ್ ಈಗಾಗಲೇ ಸೆಟ್ ಮಾಡಲಾಗಿದೆ. ಕೆಳಗೆ ನಿಮ್ಮ **Telegram Chat ID** ಮಾತ್ರ ನಮೂದಿಸಿ.")
             
-            # ಬೋಟ್ ಟೋಕನ್ ಆಟೋಮ್ಯಾಟಿಕ್ ಆಗಿ ಫಿಲ್ ಆಗಿರುತ್ತದೆ
             bot_token_input = st.text_input("Telegram Bot Token", type="password", value=DEFAULT_BOT_TOKEN)
-            
-            # ಬಳಕೆದಾರರು ತಮ್ಮ ಚಾಟ್ ಐಡಿಯನ್ನು ಇಲ್ಲಿ ಹಾಕಬಹುದು (ಉದಾ: @userinfobot ಮೂಲಕ ಪಡೆದ ID)
             chat_id_input = st.text_input("Telegram Chat ID", value=os.environ.get("TELEGRAM_CHAT_ID", ""))
             
             submit_btn = st.form_submit_button("ಈ ಪಂಚಾಂಗವನ್ನು Telegram ಗೆ ಕಳುಹಿಸಿ")
