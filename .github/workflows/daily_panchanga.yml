@@ -3,7 +3,7 @@ name: Send Daily Panchanga
 on:
   schedule:
     # Runs everyday at 7:10 PM IST (13:40 UTC)
-    - cron: '47 13 * * *'
+    - cron: '30 13 * * *'
   workflow_dispatch: # Allows you to test it manually anytime from GitHub
 
 jobs:
