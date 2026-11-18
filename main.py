@@ -1,206 +1,175 @@
-import datetime as dt
-import os
+"""
+Shared logic for the Surya-Siddhanta Nitya Panchanga app and the daily Telegram sender:
+loading the data, building the message from a template, and sending it to Telegram.
+"""
 import csv
-import io
+import datetime as dt
+import json
+import os
+import urllib.error
 import urllib.parse
 import urllib.request
-import json
-import time
-import threading
+from dataclasses import dataclass
 from zoneinfo import ZoneInfo
-import streamlit as st
 
-DATA_FILE = "panchanga_2026_2027_verified.csv"
+HERE = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(HERE, "panchanga_2026_2027_verified.csv")
+IST = ZoneInfo("Asia/Kolkata")
 
-# ---- ನಿಮ್ಮ ಬೋಟ್ ಟೋಕನ್ ನೇರವಾಗಿ ಇಲ್ಲಿ ಸೇರಿಸಲಾಗಿದೆ ----
-DEFAULT_BOT_TOKEN = "9214848114:AAFCQ37n-Tp3sPHXa_cQVSbclO4Np21uCkY"
-
-# ---- ಹೆಡರ್ ಮತ್ತು ಫೂಟರ್ ಟೆಕ್ಸ್ಟ್ ----
-HEADER = (
+# ---- text you can edit (copied exactly as you wrote it) --------------------------------
+DEFAULT_HEADER = (
     "ಶ್ರೀ ಶೇಚಜಯತು : \n"
     "ಶ್ರೀ ಸುಧರ್ಮೇoದ್ರ ತೀರ್ಥರ , ಶ್ರೀ ಸುಶೀಲೆಂದ್ರ ತೀರ್ಥರ ರ ಪರಮಾನುಗ್ರಹದಿಂದ, \n"
     "*ಸೂರ್ಯಸಿದ್ಧಾಂತ ನಿತ್ಯ ಪಂಚಾಂಗ*"
 )
-FOOTER = "ಪಂಚಾಂಗ ಕರ್ತೃ :\nಅಲ್ಲಿಪುರ ವಾದಿರಾಜ ಆಚಾರ್."
-SHOW_YEAR_AFTER_WEEKDAY = True  # ದಿನಾಂಕದ ನಂತರ ವರ್ಷ ತೋರಿಸಲು
+DEFAULT_FOOTER = "ಪಂಚಾಂಗ ಕರ್ತೃ :\nಅಲ್ಲಿಪುರ ವಾದಿರಾಜ ಆಚಾರ್."
+# -----------------------------------------------------------------------------------------
+
+KN_MONTHS = ["ಜನವರಿ", "ಫೆಬ್ರವರಿ", "ಮಾರ್ಚ್", "ಏಪ್ರಿಲ್", "ಮೇ", "ಜೂನ್",
+             "ಜುಲೈ", "ಆಗಸ್ಟ್", "ಸೆಪ್ಟೆಂಬರ್", "ಅಕ್ಟೋಬರ್", "ನವೆಂಬರ್", "ಡಿಸೆಂಬರ್"]
 
 
-@st.cache_data
+@dataclass
+class Options:
+    style: str = "full"            # "full" (your format) or "short"
+    show_header: bool = True
+    show_footer: bool = True
+    show_year: bool = True         # your sample line: *04-04-2026*, ಶನಿವಾರ 2026
+    show_sun: bool = True
+    show_shraddha: bool = True
+    show_event: bool = True
+    header: str = DEFAULT_HEADER
+    footer: str = DEFAULT_FOOTER
+
+
+class TelegramError(Exception):
+    pass
+
+
+def now_ist():
+    return dt.datetime.now(IST)
+
+
 def load_rows():
-    if not os.path.exists(DATA_FILE):
-        return {}
     with open(DATA_FILE, encoding="utf-8-sig", newline="") as f:
         return {r["date"]: r for r in csv.DictReader(f)}
 
 
+def blank(v):
+    return v is None or str(v).strip() == "" or str(v).lower() == "nan"
+
+
 def end_text(e):
-    if not e or pd_isna(e):
+    """'08:26' -> '08:26 ರವರೆಗೆ' ; '26:07' (after midnight) -> 'ಮರುದಿನ 02:07 ರವರೆಗೆ' ; 'AR' -> whole day and night"""
+    if blank(e):
         return ""
     if e == "AR":
         return "ಅಹೋರಾತ್ರ (ಇಡೀ ದಿನ-ರಾತ್ರಿ)"
-    try:
-        h, m = (int(x) for x in e.split(":"))
-        if h >= 24:
-            return f"ಮರುದಿನ {h - 24:02d}:{m:02d} ರವರೆಗೆ"
-        return f"{h:02d}:{m:02d} ರವರೆಗೆ"
-    except:
-        return e
-
-
-def pd_isna(val):
-    return val is None or val == "" or str(val).lower() == "nan"
+    h, m = (int(x) for x in e.split(":"))
+    if h >= 24:
+        return f"ಮರುದಿನ {h - 24:02d}:{m:02d} ರವರೆಗೆ"
+    return f"{h:02d}:{m:02d} ರವರೆಗೆ"
 
 
 def limb(name, end, name2="", end2=""):
-    if pd_isna(name):
-        return ""
-    s = f"{name} – {end_text(end)}" if not pd_isna(end) else name
-    if not pd_isna(name2):
+    s = f"{name} – {end_text(end)}" if not blank(end) else name
+    if not blank(name2):          # the book lists two tithis / nakshatras / yogas ending on the same day
         s += f", ನಂತರ {name2} – {end_text(end2)}"
     return s
 
 
 def t12(hhmm):
-    if pd_isna(hhmm):
-        return ""
-    try:
-        h, m = (int(x) for x in hhmm.split(":"))
-        return f"{(h % 12) or 12:02d}:{m:02d} {'am' if h < 12 else 'pm'}"
-    except:
-        return hhmm
+    h, m = (int(x) for x in hhmm.split(":"))
+    return f"{(h % 12) or 12:02d}:{m:02d} {'am' if h < 12 else 'pm'}"
 
 
-def build_message(r):
+def build_message(r, opt=None):
+    opt = opt or Options()
     d = dt.date.fromisoformat(r["date"])
-    year = f" {d.year}" if SHOW_YEAR_AFTER_WEEKDAY else ""
-    
-    sunset_val = t12(r['sunset'])
-    
-    lines = [
-        HEADER,
-        "",
-        f"*{d.strftime('%d-%m-%Y')}*, {r['vara']}{year}",
+    date_s = d.strftime("%d-%m-%Y")
+    tithi = limb(r["tithi"], r["tithi_end"], r["tithi2"], r["tithi2_end"])
+    nak = limb(r["nakshatra"], r["nakshatra_end"], r["nakshatra2"], r["nakshatra2_end"])
+    yoga = limb(r["yoga"], r["yoga_end"], r["yoga2"], r["yoga2_end"])
+    karana = limb(r["karana"], r["karana_end"])
+    event = (r.get("event") or "").strip()
+
+    if opt.style == "short":
+        lines = []
+        if opt.show_header:
+            lines.append("*ಸೂರ್ಯಸಿದ್ಧಾಂತ ನಿತ್ಯ ಪಂಚಾಂಗ*")
+        lines += [
+            f"*{date_s}*, {r['vara']}",
+            f"{r['samvatsara']} ಸಂವತ್ಸರ · {r['ayana']} · {r['ruthu']} ಋತು",
+            f"{r['masa']} ಮಾಸ · {r['paksha']} ಪಕ್ಷ",
+            "",
+            f"*ತಿಥಿ:* {tithi}",
+            f"*ನಕ್ಷತ್ರ:* {nak}",
+            f"*ಯೋಗ:* {yoga}",
+            f"*ಕರಣ:* {karana}",
+        ]
+        if opt.show_sun:
+            lines.append(f"*ಸೂರ್ಯೋದಯ:* {t12(r['sunrise'])} · *ಸೂರ್ಯಾಸ್ತ:* {t12(r['sunset'])}")
+        if opt.show_shraddha:
+            lines.append(f"*ಶ್ರಾದ್ಧತಿಥಿ:* {r['shraddha_tithi']}")
+        if opt.show_event and event:
+            lines += ["", f"*ವಿಶೇಷ:* {event}"]
+        return "\n".join(lines)
+
+    # ---- full template (your format) ----
+    year = f" {d.year}" if opt.show_year else ""
+    lines = []
+    if opt.show_header:
+        lines += [opt.header, ""]
+    lines += [
+        f"*{date_s}*, {r['vara']}{year}",
         "",
         f"*ಸಂವತ್ಸರ:* {r['samvatsara']}",
         f"*ಆಯಣ:* {r['ayana']}",
         f"*ಋತು:* {r['ruthu']}",
         f"*ಮಾಸ:* {r['masa']}",
         f"*ಪಕ್ಷ:* {r['paksha']}",
-        f"*ತಿಥಿ:* {limb(r['tithi'], r['tithi_end'], r['tithi2'], r['tithi2_end'])}",
+        f"*ತಿಥಿ:* {tithi}",
         f"*ವಾರ:* – {r['vara']}",
-        f"*ನಕ್ಷತ್ರ:* {limb(r['nakshatra'], r['nakshatra_end'], r['nakshatra2'], r['nakshatra2_end'])}",
-        f"*ಯೋಗ:* {limb(r['yoga'], r['yoga_end'], r['yoga2'], r['yoga2_end'])}",
-        f"*ಕರಣ:* {limb(r['karana'], r['karana_end'])}",
-        f"*ಸೂರ್ಯೋದಯ:* {t12(r['sunrise'])}",
-        f"*ಸೂರ್ಯಾಸ್ತ * : {sunset_val}",
-        f"*ಶ್ರಾದ್ಧತಿಥಿ:* {r['shraddha_tithi']}",
+        f"*ನಕ್ಷತ್ರ:* {nak}",
+        f"*ಯೋಗ:* {yoga}",
+        f"*ಕರಣ:* {karana}",
     ]
-    if not pd_isna(r.get("event", "")):
-        lines += ["", "*ಧರ್ಮಶಾಸ್ತ್ರ ವಿಚಾರ:*", r["event"].strip()]
-    lines += ["", FOOTER]
+    if opt.show_sun:
+        lines += [f"*ಸೂರ್ಯೋದಯ:* {t12(r['sunrise'])}",
+                  f"*ಸೂರ್ಯಾಸ್ತ:* {t12(r['sunset'])}"]      # no space before the closing * (WhatsApp needs that for bold)
+    if opt.show_shraddha:
+        lines.append(f"*ಶ್ರಾದ್ಧತಿಥಿ:* {r['shraddha_tithi']}")
+    if opt.show_event and event:
+        lines += ["", "*ಧರ್ಮಶಾಸ್ತ್ರ ವಿಚಾರ:*", event]
+    if opt.show_footer:
+        lines += ["", opt.footer]
     return "\n".join(lines)
 
 
 def send_telegram(text, token, chat_id):
+    """Plain text on purpose (no parse_mode) so the *bold* marks survive when copied into WhatsApp."""
     if not token or not chat_id:
-        return False, "Token ಅಥವಾ Chat ID ನೀಡಲಾಗಿಲ್ಲ."
+        raise TelegramError("Bot token / Chat ID ಇಲ್ಲ (missing).")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    body = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
-    try:
-        req = urllib.request.Request(url, data=body)
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            res = json.load(resp)
-            return res.get("ok", False), " ಯಶಸ್ವಿಯಾಗಿ ಕಳುಹಿಸಲಾಗಿದೆ!"
-    except Exception as e:
-        return False, f"ದೋಷ: {str(e)}"
-
-
-# ---- ರಾತ್ರಿ 10 ಗಂಟೆಗೆ ಆಟೋಮ್ಯಾಟಿಕ್ ನೋಟಿಫಿಕೇಶನ್ ಕಳುಹಿಸಲು ಬ್ಯಾಕ್‌ಗ್ರೌಂಡ್ ಜಾಬ್ ----
-def background_scheduler():
-    while True:
-        now = dt.datetime.now(ZoneInfo("Asia/Kolkata"))
-        if now.hour == 22 and now.minute == 0:
-            token = DEFAULT_BOT_TOKEN
-            chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-            rows = load_rows()
-            
-            tomorrow = (now + dt.timedelta(days=1)).date().isoformat()
-            if tomorrow in rows:
-                msg = build_message(rows[tomorrow])
-                if token and chat_id:
-                    send_telegram(msg, token, chat_id)
-            time.sleep(60)
-        time.sleep(30)
-
-
-if "scheduler_started" not in st.session_state:
-    st.session_state["scheduler_started"] = True
-    threading.Thread(target=background_scheduler, daemon=True).start()
-
-
-# ---- Streamlit UI ವಿನ್ಯಾಸ ----
-def main():
-    st.set_page_config(page_title="ಸೂರ್ಯಸಿದ್ಧಾಂತ ನಿತ್ಯ ಪಂಚಾಂಗ", page_icon="📅", layout="centered")
-    
-    st.title("☀️ ಸೂರ್ಯಸಿದ್ಧಾಂತ ನಿತ್ಯ ಪಂಚಾಂಗ")
-    st.write("ದಿನಾಂಕವನ್ನು ಆಯ್ಕೆ ಮಾಡಿ ಪಂಚಾಂಗ ವೀಕ್ಷಿಸಿ ಮತ್ತು ನಿಮ್ಮ Telegram ಚಾಟ್‌ಗೆ ಕಳುಹಿಸಿ.")
-
-    rows = load_rows()
-    if not rows:
-        st.error(f"⚠️ `{DATA_FILE}` ಫೈಲ್ ಸಿಕ್ಕಿಲ್ಲ! ದಯವಿಟ್ಟು ಅದನ್ನು ಮೇನ್ ಫೋಲ್ಡರ್‌ನಲ್ಲಿ ಅಪ್ಲೋಡ್ ಮಾಡಿ.")
-        return
-
-    available_dates = sorted(rows.keys())
-    min_date = dt.date.fromisoformat(available_dates[0])
-    max_date = dt.date.fromisoformat(available_dates[-1])
-    default_date = dt.datetime.now(ZoneInfo("Asia/Kolkata")).date()
-    
-    if default_date < min_date:
-        default_date = min_date
-    elif default_date > max_date:
-        default_date = max_date
-
-    selected_date = st.date_input(
-        "ಪಂಚಾಂಗ ದಿನಾಂಕವನ್ನು ಆಯ್ಕೆಮಾಡಿ:",
-        value=default_date,
-        min_value=min_date,
-        max_value=max_date
-    )
-
-    date_str = selected_date.isoformat()
-
-    if date_str in rows:
-        row = rows[date_str]
-        message_content = build_message(row)
-        
-        st.subheader("📋 ಪಂಚಾಂಗ ಸಂದೇಶದ ಪೂರ್ವವೀಕ್ಷಣೆ (Preview):")
-        st.code(message_content, language="markdown")
-        
-        st.markdown("---")
-        st.subheader("🚀 Telegram ಗೆ ಕಳುಹಿಸಿ")
-        
-        with st.form("telegram_form"):
-            st.info("ನಿಮ್ಮ ಬಾಟ್ ಟೋಕನ್ ಈಗಾಗಲೇ ಸೆಟ್ ಮಾಡಲಾಗಿದೆ. ಕೆಳಗೆ ನಿಮ್ಮ **Telegram Chat ID** ಮಾತ್ರ ನಮೂದಿಸಿ.")
-            
-            bot_token_input = st.text_input("Telegram Bot Token", type="password", value=DEFAULT_BOT_TOKEN)
-            chat_id_input = st.text_input("Telegram Chat ID", value=os.environ.get("TELEGRAM_CHAT_ID", ""))
-            
-            submit_btn = st.form_submit_button("ಈ ಪಂಚಾಂಗವನ್ನು Telegram ಗೆ ಕಳುಹಿಸಿ")
-            
-            if submit_btn:
-                success, resp_msg = send_telegram(message_content, bot_token_input, chat_id_input)
-                if success:
-                    st.success(f"ಸಂದೇಶ ಯಶಸ್ವಿಯಾಗಿ ಕಳುಹಿಸಲಾಗಿದೆ! {resp_msg}")
-                else:
-                    st.error(f"ಕಳುಹಿಸಲು ವಿಫಲವಾಯಿತು. {resp_msg}")
-    else:
-        st.warning(f"⚠️ {selected_date.strftime('%d-%m-%Y')} ರ ದತ್ತಾಂಶ ಲಭ್ಯವಿಲ್ಲ.")
-
-    with st.sidebar:
-        st.header("⚙️ ಆಟೋಮ್ಯಾಟಿಕ್ ನೋಟಿಫಿಕೇಶನ್")
-        st.write("ಪ್ರತಿದಿನ **ರಾತ್ರಿ 10:00 ಗಂಟೆಗೆ** (IST) ಸ್ವಯಂಚಾಲಿತವಾಗಿ ನಾಳೆಯ ದಿನದ ಪಂಚಾಂಗವು ನಿಮ್ಮ Telegram ಚಾಟ್‌ಗೆ ರವಾನೆಯಾಗುತ್ತದೆ.")
-        st.markdown("---")
-        st.markdown("**ಮುಖ್ಯ ಸೂಚನೆ:** ಸಂದೇಶ ಬರುವುದು ಯಶಸ್ವಿಯಾಗಲು ನಿಮ್ಮ ಬೋಟ್ ಚಾಟ್ (`t.me/surya_panchanga_bot`) ಗೆ ಹೋಗಿ ಮೊದಲು **Start** ಬಟನ್ ಕ್ಲಿಕ್ ಮಾಡಿರುವುದನ್ನು ಖಚಿತಪಡಿಸಿಕೊಳ್ಳಿ.")
-
-if __name__ == "__main__":
-    main()
+    chunks, cur = [], ""
+    for line in text.split("\n"):                 # Telegram limit is 4096 characters per message
+        if len(cur) + len(line) + 1 > 3800 and cur:
+            chunks.append(cur); cur = ""
+        cur += line + "\n"
+    chunks.append(cur.rstrip("\n"))
+    for part in chunks:
+        body = urllib.parse.urlencode({"chat_id": chat_id, "text": part}).encode()
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, data=body), timeout=30) as resp:
+                if not json.load(resp).get("ok"):
+                    raise TelegramError("Telegram did not accept the message.")
+        except urllib.error.HTTPError as e:
+            try:
+                why = json.loads(e.read().decode()).get("description", "")
+            except Exception:
+                why = ""
+            raise TelegramError(f"Telegram error {e.code}: {why}") from None
+        except TelegramError:
+            raise
+        except Exception as e:                    # network problems etc. (the token is never included)
+            raise TelegramError(f"Could not reach Telegram ({type(e).__name__}).") from None
