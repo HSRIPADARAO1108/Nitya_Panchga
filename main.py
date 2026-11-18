@@ -243,16 +243,22 @@ def send_telegram_photo(png_bytes, token, chat_id, caption=""):
         return False, f"ದೋಷ ({chat_id}): {e}"
 
 
-def build_poster(r, template, show_year=True):
+STYLES = {
+    "ಮೇಲೆ ಚಿತ್ರ (Banner)": "banner",
+    "ಹಿನ್ನೆಲೆ ವಾಟರ್‌ಮಾರ್ಕ್ (Watermark)": "watermark",
+}
+
+
+def build_poster(r, template, show_year=True, style="banner", bg=None):
     date_line, fields, event = get_fields(r, template, show_year)
     return poster.make_poster(
-        date_line, fields, event, HEADER_LINES, TITLE, FOOTER_LINES
+        date_line, fields, event, HEADER_LINES, TITLE, FOOTER_LINES, bg=bg, style=style
     )
 
 
 @st.cache_data(show_spinner="ಚಿತ್ರ ತಯಾರಾಗುತ್ತಿದೆ...")
-def cached_poster(date_key, template, show_year):
-    return build_poster(load_rows()[date_key], template, show_year)
+def cached_poster(date_key, template, show_year, style, bg):
+    return build_poster(load_rows()[date_key], template, show_year, style, bg)
 
 
 def parse_ids(raw):
@@ -263,7 +269,7 @@ def parse_ids(raw):
 # Background scheduler: ONE thread per server (not per browser session)
 # ------------------------------------------------------------------
 @st.cache_resource
-def start_scheduler(token, chat_ids_tuple, template, send_image):
+def start_scheduler(token, chat_ids_tuple, template, send_image, style):
     state = {"last_sent": None}
 
     def loop():
@@ -280,7 +286,7 @@ def start_scheduler(token, chat_ids_tuple, template, send_image):
                     if tomorrow in rows and token and chat_ids_tuple:
                         msg = render_message(rows[tomorrow], template, "tg")
                         if send_image:
-                            png = build_poster(rows[tomorrow], template)
+                            png = build_poster(rows[tomorrow], template, True, style)
                             for cid in chat_ids_tuple:
                                 send_telegram_photo(png, token, cid)
                         send_to_all(msg, token, chat_ids_tuple)
@@ -397,6 +403,16 @@ def main():
         tpl_name = st.selectbox("ಸಂದೇಶ ಟೆಂಪ್ಲೇಟ್", list(TEMPLATES.keys()))
         template = TEMPLATES[tpl_name]
         show_year = st.toggle("ವರ್ಷ ತೋರಿಸಿ", value=True)
+        style_name = st.radio("ಚಿತ್ರದ ಶೈಲಿ", list(STYLES.keys()))
+        style = STYLES[style_name]
+        bg_file = st.file_uploader(
+            "ಹಿನ್ನೆಲೆ ಚಿತ್ರ ಬದಲಿಸಿ (ಐಚ್ಛಿಕ)", type=["jpg", "jpeg", "png", "webp"]
+        )
+        bg_bytes = bg_file.getvalue() if bg_file else None
+        if not bg_bytes and poster.find_bg() is None:
+            st.warning(
+                "ಹಿನ್ನೆಲೆ ಚಿತ್ರ ಸಿಕ್ಕಿಲ್ಲ. `assets/background.jpg` ಎಂದು ಸೇರಿಸಿ ಅಥವಾ ಮೇಲೆ ಅಪ್‌ಲೋಡ್ ಮಾಡಿ."
+            )
         send_image = st.toggle("ಸ್ವಯಂ ಸಂದೇಶದೊಂದಿಗೆ ಚಿತ್ರವನ್ನೂ ಕಳುಹಿಸಿ", value=True)
 
         st.markdown("---")
@@ -420,7 +436,7 @@ def main():
         )
 
     if token and chat_ids:
-        start_scheduler(token, tuple(chat_ids), template, send_image)
+        start_scheduler(token, tuple(chat_ids), template, send_image, style)
 
     # ---- Header ----
     st.title("🪔 ನಿತ್ಯ ಪಂಚಾಂಗ")
@@ -461,7 +477,7 @@ def main():
         st.markdown(render_card(row, template, show_year), unsafe_allow_html=True)
 
     with tab_img:
-        png = cached_poster(row["date"], template, show_year)
+        png = cached_poster(row["date"], template, show_year, style, bg_bytes)
         st.image(png, use_container_width=True)
         i1, i2 = st.columns(2)
         i1.download_button(
