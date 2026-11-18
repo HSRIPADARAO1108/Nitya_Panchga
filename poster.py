@@ -141,6 +141,53 @@ def vertical_gradient(width, height, c_top, c_bottom, a_top, a_bottom):
     return grad
 
 
+# ------------------------------------------------------------------ background
+def find_bg():
+    """Look for a background image in several places / names (case-insensitive)."""
+    names = ("background", "bg", "temple", "idol")
+    exts = (".jpg", ".jpeg", ".png", ".webp")
+    folders = [os.path.join(BASE, "assets"), BASE, os.getcwd(), os.path.join(os.getcwd(), "assets")]
+    for folder in folders:
+        if not os.path.isdir(folder):
+            continue
+        files = os.listdir(folder)
+        for f in files:
+            stem, ext = os.path.splitext(f)
+            if stem.lower() in names and ext.lower() in exts:
+                return os.path.join(folder, f)
+    # last resort: any image inside assets/
+    for folder in folders[:1] + folders[3:]:
+        if os.path.isdir(folder):
+            for f in sorted(os.listdir(folder)):
+                if os.path.splitext(f)[1].lower() in exts:
+                    return os.path.join(folder, f)
+    return None
+
+
+def load_bg(bg=None):
+    """bg may be bytes (uploaded), a path, or None (auto-find). Returns RGB Image or None."""
+    try:
+        if isinstance(bg, (bytes, bytearray)) and bg:
+            return Image.open(io.BytesIO(bg)).convert("RGB")
+        if isinstance(bg, str) and os.path.exists(bg):
+            return Image.open(bg).convert("RGB")
+        path = find_bg()
+        if path:
+            return Image.open(path).convert("RGB")
+    except Exception:
+        pass
+    return None
+
+
+def cover_fill(img, width, height):
+    """Scale to cover width x height, centre-crop."""
+    scale = max(width / img.width, height / img.height)
+    nw, nh = int(img.width * scale) + 1, int(img.height * scale) + 1
+    img = img.resize((nw, nh), Image.LANCZOS)
+    left, top = (nw - width) // 2, (nh - height) // 2
+    return img.crop((left, top, left + width, top + height))
+
+
 # ------------------------------------------------------------------ main
 def make_poster(
     date_line,
@@ -149,9 +196,14 @@ def make_poster(
     header_lines,
     title,
     footer_lines,
-    bg_path=BG_PATH,
+    bg=None,
+    style="banner",
 ):
-    """Returns PNG bytes. fields = [(label, value), ...]."""
+    """Returns PNG bytes. fields = [(label, value), ...].
+    style: 'banner'    -> photo clearly visible at top, fades into the details
+           'watermark' -> photo faintly visible behind the whole poster
+    bg: bytes / path / None (auto-find assets/background.jpg)"""
+    watermark = style == "watermark"
     scratch = ImageDraw.Draw(Image.new("RGB", (10, 10)))
 
     f_bless = get_font(30)
@@ -180,7 +232,7 @@ def make_poster(
         ev_lines = wrap(scratch, event, f_ev, W - 2 * PAD - 2 * 28)
         ev_h = line_h(f_ev_t) + len(ev_lines) * line_h(f_ev) + 56
 
-    date_y = IMG_VISIBLE
+    date_y = 290 if watermark else IMG_VISIBLE
     date_h = 92
     panel_y = date_y + date_h + 36
     panel_h = rows_h + 24
@@ -191,27 +243,27 @@ def make_poster(
 
     # ---- background
     canvas = Image.new("RGBA", (W, total_h), (*DARK, 255))
-    if os.path.exists(bg_path):
-        bg = cover_top(Image.open(bg_path).convert("RGB"), W)
-        # slight softening so upscaled photo looks cleaner
-        bg = bg.convert("RGBA")
-        canvas.paste(bg, (0, 0))
-    else:
+    photo = load_bg(bg)
+    if photo is None:
         canvas.paste(vertical_gradient(W, total_h, (120, 60, 10), DARK, 255, 255))
-
-    # fade photo into dark brown below the visible area
-    fade_start = IMG_VISIBLE - 120
-    fade_h = 260
-    canvas.alpha_composite(
-        vertical_gradient(W, fade_h, DARK, DARK, 0, 245), (0, fade_start)
-    )
-    solid_y = fade_start + fade_h
-    if solid_y < total_h:
+    elif watermark:
+        # photo over the whole poster, then a heavy dark veil so it stays faint
+        canvas.paste(cover_fill(photo, W, total_h).convert("RGBA"), (0, 0))
+        canvas.alpha_composite(Image.new("RGBA", (W, total_h), (*DARK, 180)))
+        canvas.alpha_composite(vertical_gradient(W, 260, (0, 0, 0), (0, 0, 0), 120, 0), (0, 0))
+    else:
+        canvas.paste(cover_top(photo, W).convert("RGBA"), (0, 0))
+        fade_start = IMG_VISIBLE - 120
+        fade_h = 260
         canvas.alpha_composite(
-            Image.new("RGBA", (W, total_h - solid_y), (*DARK, 245)), (0, solid_y)
+            vertical_gradient(W, fade_h, DARK, DARK, 0, 245), (0, fade_start)
         )
-    # top shade behind header text
-    canvas.alpha_composite(vertical_gradient(W, 300, (0, 0, 0), (0, 0, 0), 190, 0), (0, 0))
+        solid_y = fade_start + fade_h
+        if solid_y < total_h:
+            canvas.alpha_composite(
+                Image.new("RGBA", (W, total_h - solid_y), (*DARK, 245)), (0, solid_y)
+            )
+        canvas.alpha_composite(vertical_gradient(W, 300, (0, 0, 0), (0, 0, 0), 190, 0), (0, 0))
 
     d = ImageDraw.Draw(canvas)
 
@@ -242,7 +294,7 @@ def make_poster(
     od.rounded_rectangle(
         (PAD, panel_y, W - PAD, panel_y + panel_h),
         radius=24,
-        fill=(0, 0, 0, 120),
+        fill=(0, 0, 0, 60 if watermark else 120),
         outline=(*GOLD, 160),
         width=2,
     )
