@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
+import poster
+
 # ------------------------------------------------------------------
 # Page config must be the first Streamlit call
 # ------------------------------------------------------------------
@@ -203,6 +205,56 @@ def send_to_all(text, token, chat_ids):
     return results
 
 
+def send_telegram_photo(png_bytes, token, chat_id, caption=""):
+    """Send a PNG as a document-quality photo (multipart/form-data)."""
+    if not token or not chat_id:
+        return False, "Bot Token ಅಥವಾ Chat ID ನೀಡಲಾಗಿಲ್ಲ."
+    boundary = "----PanchangaBoundary7MA4YWxkTrZu0gW"
+    parts = []
+
+    def field(name, value):
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
+        )
+
+    field("chat_id", chat_id)
+    if caption:
+        field("caption", caption)
+    parts.append(
+        (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="document"; '
+            'filename="panchanga.png"\r\nContent-Type: image/png\r\n\r\n'
+        ).encode()
+    )
+    parts.append(png_bytes)
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+    url = f"https://api.telegram.org/bot{token}/sendDocument"
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            res = json.load(resp)
+            return res.get("ok", False), "ಚಿತ್ರ ಯಶಸ್ವಿಯಾಗಿ ಕಳುಹಿಸಲಾಗಿದೆ"
+    except Exception as e:
+        return False, f"ದೋಷ ({chat_id}): {e}"
+
+
+def build_poster(r, template, show_year=True):
+    date_line, fields, event = get_fields(r, template, show_year)
+    return poster.make_poster(
+        date_line, fields, event, HEADER_LINES, TITLE, FOOTER_LINES
+    )
+
+
+@st.cache_data(show_spinner="ಚಿತ್ರ ತಯಾರಾಗುತ್ತಿದೆ...")
+def cached_poster(date_key, template, show_year):
+    return build_poster(load_rows()[date_key], template, show_year)
+
+
 def parse_ids(raw):
     return [x.strip() for x in raw.replace("\n", ",").split(",") if x.strip()]
 
@@ -211,7 +263,7 @@ def parse_ids(raw):
 # Background scheduler: ONE thread per server (not per browser session)
 # ------------------------------------------------------------------
 @st.cache_resource
-def start_scheduler(token, chat_ids_tuple, template):
+def start_scheduler(token, chat_ids_tuple, template, send_image):
     state = {"last_sent": None}
 
     def loop():
@@ -227,6 +279,10 @@ def start_scheduler(token, chat_ids_tuple, template):
                     rows = load_rows()
                     if tomorrow in rows and token and chat_ids_tuple:
                         msg = render_message(rows[tomorrow], template, "tg")
+                        if send_image:
+                            png = build_poster(rows[tomorrow], template)
+                            for cid in chat_ids_tuple:
+                                send_telegram_photo(png, token, cid)
                         send_to_all(msg, token, chat_ids_tuple)
                         state["last_sent"] = tomorrow
             except Exception:
@@ -341,6 +397,7 @@ def main():
         tpl_name = st.selectbox("ಸಂದೇಶ ಟೆಂಪ್ಲೇಟ್", list(TEMPLATES.keys()))
         template = TEMPLATES[tpl_name]
         show_year = st.toggle("ವರ್ಷ ತೋರಿಸಿ", value=True)
+        send_image = st.toggle("ಸ್ವಯಂ ಸಂದೇಶದೊಂದಿಗೆ ಚಿತ್ರವನ್ನೂ ಕಳುಹಿಸಿ", value=True)
 
         st.markdown("---")
         st.subheader("📨 Telegram")
@@ -363,7 +420,7 @@ def main():
         )
 
     if token and chat_ids:
-        start_scheduler(token, tuple(chat_ids), template)
+        start_scheduler(token, tuple(chat_ids), template, send_image)
 
     # ---- Header ----
     st.title("🪔 ನಿತ್ಯ ಪಂಚಾಂಗ")
@@ -396,10 +453,32 @@ def main():
         st.warning(f"⚠️ {selected.strftime('%d-%m-%Y')} ರ ದತ್ತಾಂಶ ಲಭ್ಯವಿಲ್ಲ.")
         return
 
-    tab_view, tab_share = st.tabs(["📖 ಪಂಚಾಂಗ", "📤 ಹಂಚಿಕೊಳ್ಳಿ (Share)"])
+    tab_view, tab_img, tab_share = st.tabs(
+        ["📖 ಪಂಚಾಂಗ", "🖼️ ಚಿತ್ರ (Image)", "📤 ಹಂಚಿಕೊಳ್ಳಿ (Text)"]
+    )
 
     with tab_view:
         st.markdown(render_card(row, template, show_year), unsafe_allow_html=True)
+
+    with tab_img:
+        png = cached_poster(row["date"], template, show_year)
+        st.image(png, use_container_width=True)
+        i1, i2 = st.columns(2)
+        i1.download_button(
+            "⬇️ PNG ಡೌನ್‌ಲೋಡ್ (WhatsApp ಗೆ ಹಂಚಿ)",
+            data=png,
+            file_name=f"panchanga_{row['date']}.png",
+            mime="image/png",
+            use_container_width=True,
+            type="primary",
+        )
+        if token and chat_ids:
+            if i2.button("🚀 ಚಿತ್ರವನ್ನು Telegram ಗೆ ಕಳುಹಿಸಿ", use_container_width=True):
+                for cid in chat_ids:
+                    ok, msg = send_telegram_photo(png, token, cid, caption=row["date"])
+                    (st.success if ok else st.error)(f"{cid}: {msg}")
+        else:
+            i2.caption("Telegram ಗೆ ಕಳುಹಿಸಲು ಸೈಡ್‌ಬಾರ್‌ನಲ್ಲಿ Chat ID ನೀಡಿ.")
 
     with tab_share:
         wa_text = render_message(row, template, "wa", show_year)
