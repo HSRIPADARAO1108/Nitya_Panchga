@@ -1,3 +1,4 @@
+import base64
 import csv
 import datetime as dt
 import html
@@ -10,6 +11,7 @@ import urllib.request
 from zoneinfo import ZoneInfo
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 import poster
 
@@ -20,6 +22,7 @@ st.set_page_config(
     page_title="ಸೂರ್ಯಸಿದ್ಧಾಂತ ನಿತ್ಯ ಪಂಚಾಂಗ",
     page_icon="🪔",
     layout="centered",
+    initial_sidebar_state="collapsed",
 )
 
 DATA_FILE = "panchanga_2026_2027_verified.csv"
@@ -34,9 +37,14 @@ TITLE = "ಸೂರ್ಯಸಿದ್ಧಾಂತ ನಿತ್ಯ ಪಂಚಾಂ
 FOOTER_LINES = ["ಪಂಚಾಂಗ ಕರ್ತೃ :", "ಅಲ್ಲಿಪುರ ವಾದಿರಾಜ ಆಚಾರ್."]
 
 TEMPLATES = {
-    "ಪೂರ್ಣ ಪಂಚಾಂಗ (Full)": "full",
-    "ಸಂಕ್ಷಿಪ್ತ (Short)": "short",
-    "ಶ್ರಾದ್ಧ ಕೇಂದ್ರಿತ (Shraddha)": "shraddha",
+    "ಪೂರ್ಣ": "full",
+    "ಸಂಕ್ಷಿಪ್ತ": "short",
+    "ಶ್ರಾದ್ಧ": "shraddha",
+}
+
+STYLES = {
+    "ಮೇಲೆ ಚಿತ್ರ": "banner",
+    "ವಾಟರ್‌ಮಾರ್ಕ್": "watermark",
 }
 
 
@@ -243,12 +251,6 @@ def send_telegram_photo(png_bytes, token, chat_id, caption=""):
         return False, f"ದೋಷ ({chat_id}): {e}"
 
 
-STYLES = {
-    "ಮೇಲೆ ಚಿತ್ರ (Banner)": "banner",
-    "ಹಿನ್ನೆಲೆ ವಾಟರ್‌ಮಾರ್ಕ್ (Watermark)": "watermark",
-}
-
-
 def build_poster(r, template, show_year=True, style="banner", bg=None):
     date_line, fields, event = get_fields(r, template, show_year)
     return poster.make_poster(
@@ -263,6 +265,68 @@ def cached_poster(date_key, template, show_year, style, bg):
 
 def parse_ids(raw):
     return [x.strip() for x in raw.replace("\n", ",").split(",") if x.strip()]
+
+
+# ------------------------------------------------------------------
+# Direct share button (Web Share API -> opens WhatsApp / Telegram / any app)
+# ------------------------------------------------------------------
+SHARE_HTML = """
+<style>
+  html, body { margin:0; padding:0; background:transparent; }
+  #share {
+    width:100%; box-sizing:border-box; border:0; cursor:pointer;
+    padding:15px 12px; border-radius:14px;
+    font-size:17px; font-weight:700; color:#2a1405;
+    font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans Kannada",sans-serif;
+    background:linear-gradient(135deg,#f59e0b,#ffcd60);
+    box-shadow:0 3px 10px rgba(180,83,9,.35);
+    -webkit-tap-highlight-color:transparent;
+  }
+  #share:active { transform:scale(.98); }
+  #msg { font:13px sans-serif; color:#a16207; text-align:center; margin-top:6px; min-height:16px; }
+</style>
+<button id="share">📤 ಹಂಚಿಕೊಳ್ಳಿ (Share)</button>
+<div id="msg"></div>
+<script>
+  const B64 = "__B64__";
+  const NAME = "__NAME__";
+  const msg = document.getElementById("msg");
+
+  function makeFile() {
+    const bin = atob(B64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new File([arr], NAME, { type: "image/png" });
+  }
+
+  function fallbackSave(file) {
+    const url = URL.createObjectURL(file);
+    const a = document.createElement("a");
+    a.href = url; a.download = NAME;
+    document.body.appendChild(a); a.click(); a.remove();
+    msg.textContent = "ಈ ಸಾಧನದಲ್ಲಿ ನೇರ ಹಂಚಿಕೆ ಲಭ್ಯವಿಲ್ಲ — ಚಿತ್ರ ಸೇವ್ ಆಗಿದೆ.";
+  }
+
+  document.getElementById("share").addEventListener("click", async () => {
+    const file = makeFile();
+    try {
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: "ನಿತ್ಯ ಪಂಚಾಂಗ" });
+      } else {
+        fallbackSave(file);
+      }
+    } catch (e) {
+      if (e && e.name !== "AbortError") fallbackSave(file);
+    }
+  });
+</script>
+"""
+
+
+def share_button(png_bytes, filename):
+    b64 = base64.b64encode(png_bytes).decode()
+    code = SHARE_HTML.replace("__B64__", b64).replace("__NAME__", filename)
+    components.html(code, height=86)
 
 
 # ------------------------------------------------------------------
@@ -301,11 +365,50 @@ def start_scheduler(token, chat_ids_tuple, template, send_image, style):
 
 
 # ------------------------------------------------------------------
-# Styling
+# Styling (mobile first)
 # ------------------------------------------------------------------
 CSS = """
 <style>
-.block-container { padding-top: 1.5rem; max-width: 760px; }
+/* ---------- page ---------- */
+#MainMenu, footer { visibility: hidden; }
+.block-container {
+  padding: 1rem .9rem 3rem .9rem !important;
+  max-width: 720px;
+}
+h1 { font-size: clamp(1.45rem, 6vw, 2rem) !important; text-align: center; padding: .2rem 0 .6rem 0 !important; }
+
+/* ---------- keep button rows side by side on phones ---------- */
+div[data-testid="stHorizontalBlock"] {
+  flex-wrap: nowrap !important;
+  gap: .4rem !important;
+}
+div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
+div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+  min-width: 0 !important;
+  flex: 1 1 0 !important;
+  width: auto !important;
+}
+
+/* ---------- buttons: big tap targets ---------- */
+.stButton > button, .stDownloadButton > button, .stLinkButton > a {
+  min-height: 2.9rem;
+  border-radius: 12px;
+  font-weight: 600;
+  padding: .35rem .3rem;
+  white-space: nowrap;
+}
+.stButton > button p, .stLinkButton > a p { font-size: clamp(.78rem, 3.4vw, 1rem); }
+
+/* ---------- tabs ---------- */
+.stTabs [data-baseweb="tab-list"] { gap: .2rem; overflow-x: auto; }
+.stTabs [data-baseweb="tab"] { padding: .55rem .8rem; font-weight: 600; }
+
+/* ---------- inputs ---------- */
+div[data-testid="stDateInput"] input { font-size: 1rem; min-height: 2.8rem; }
+div[data-testid="stRadio"] label p { font-size: .95rem; }
+div[data-testid="stExpander"] { border-radius: 12px; }
+
+/* ---------- panchanga card ---------- */
 .pc-card {
   border: 1px solid rgba(214,125,20,.45);
   border-radius: 18px;
@@ -315,29 +418,31 @@ CSS = """
 }
 .pc-head {
   background: linear-gradient(135deg, #b45309, #f59e0b);
-  color: #fff; padding: 16px 18px; text-align: center;
+  color: #fff; padding: 14px 12px; text-align: center;
 }
-.pc-head .blessing { font-size: .8rem; opacity: .95; line-height: 1.5; }
-.pc-head .title { font-size: 1.35rem; font-weight: 700; margin-top: 6px; }
+.pc-head .blessing { font-size: clamp(.68rem, 2.8vw, .8rem); opacity: .95; line-height: 1.5; }
+.pc-head .title { font-size: clamp(1.1rem, 5vw, 1.4rem); font-weight: 700; margin-top: 6px; }
 .pc-date {
   background: rgba(245,158,11,.14);
-  text-align: center; padding: 10px; font-weight: 700; font-size: 1.1rem;
+  text-align: center; padding: 10px 8px; font-weight: 700;
+  font-size: clamp(.95rem, 4.2vw, 1.15rem);
 }
 .pc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
-.pc-item { padding: 10px 16px; border-top: 1px solid rgba(128,128,128,.2); }
+.pc-item { padding: 9px 12px; border-top: 1px solid rgba(128,128,128,.2); min-width: 0; }
 .pc-item.wide { grid-column: 1 / -1; }
-.pc-label { font-size: .75rem; opacity: .7; }
-.pc-value { font-size: 1rem; font-weight: 600; }
+.pc-label { font-size: .72rem; opacity: .7; }
+.pc-value { font-size: clamp(.9rem, 3.8vw, 1.02rem); font-weight: 600; overflow-wrap: anywhere; }
 .pc-event {
-  padding: 12px 16px; border-top: 1px solid rgba(128,128,128,.2);
+  padding: 12px 14px; border-top: 1px solid rgba(128,128,128,.2);
   background: rgba(245,158,11,.08); white-space: pre-wrap;
+  font-size: clamp(.9rem, 3.8vw, 1rem); line-height: 1.55;
 }
 .pc-event .pc-label { font-weight: 700; opacity: .9; }
 .pc-foot {
   text-align: center; padding: 10px; font-size: .85rem; opacity: .8;
   border-top: 1px solid rgba(128,128,128,.2);
 }
-@media (max-width: 520px) { .pc-grid { grid-template-columns: 1fr; } }
+@media (max-width: 340px) { .pc-grid { grid-template-columns: 1fr; } }
 </style>
 """
 
@@ -396,54 +501,14 @@ def main():
     if "sel_date" not in st.session_state:
         st.session_state["sel_date"] = clamp(today)
 
-    # ---- Sidebar settings ----
     token = get_secret("TELEGRAM_BOT_TOKEN")
-    with st.sidebar:
-        st.header("⚙️ ಸೆಟ್ಟಿಂಗ್ಸ್")
-        tpl_name = st.selectbox("ಸಂದೇಶ ಟೆಂಪ್ಲೇಟ್", list(TEMPLATES.keys()))
-        template = TEMPLATES[tpl_name]
-        show_year = st.toggle("ವರ್ಷ ತೋರಿಸಿ", value=True)
-        style_name = st.radio("ಚಿತ್ರದ ಶೈಲಿ", list(STYLES.keys()))
-        style = STYLES[style_name]
-        bg_file = st.file_uploader(
-            "ಹಿನ್ನೆಲೆ ಚಿತ್ರ ಬದಲಿಸಿ (ಐಚ್ಛಿಕ)", type=["jpg", "jpeg", "png", "webp"]
-        )
-        bg_bytes = bg_file.getvalue() if bg_file else None
-        if not bg_bytes and poster.find_bg() is None:
-            st.warning(
-                "ಹಿನ್ನೆಲೆ ಚಿತ್ರ ಸಿಕ್ಕಿಲ್ಲ. `assets/background.jpg` ಎಂದು ಸೇರಿಸಿ ಅಥವಾ ಮೇಲೆ ಅಪ್‌ಲೋಡ್ ಮಾಡಿ."
-            )
-        send_image = st.toggle("ಸ್ವಯಂ ಸಂದೇಶದೊಂದಿಗೆ ಚಿತ್ರವನ್ನೂ ಕಳುಹಿಸಿ", value=True)
-
-        st.markdown("---")
-        st.subheader("📨 Telegram")
-        chat_raw = st.text_area(
-            "Chat ID(ಗಳು)",
-            value=get_secret("TELEGRAM_CHAT_ID"),
-            help="ಒಂದಕ್ಕಿಂತ ಹೆಚ್ಚು ಇದ್ದರೆ ಕಾಮಾ (,) ಬಳಸಿ ಬೇರ್ಪಡಿಸಿ.",
-            height=80,
-        )
-        chat_ids = parse_ids(chat_raw)
-        if token:
-            st.caption("✅ Bot token ಸೆಟ್ ಆಗಿದೆ (secrets)")
-        else:
-            st.warning("TELEGRAM_BOT_TOKEN ಸೆಟ್ ಮಾಡಿಲ್ಲ. Secrets ನಲ್ಲಿ ಸೇರಿಸಿ.")
-        st.markdown("---")
-        st.caption(
-            f"🕙 ಪ್ರತಿದಿನ ರಾತ್ರಿ {SEND_HOUR}:00 IST ಗೆ ನಾಳೆಯ ಪಂಚಾಂಗ ಸ್ವಯಂಚಾಲಿತವಾಗಿ "
-            "ಕಳುಹಿಸಲಾಗುತ್ತದೆ. ಮೊದಲು ಬೋಟ್ "
-            "(`t.me/surya_panchanga_bot`) ನಲ್ಲಿ **Start** ಒತ್ತಿ."
-        )
-
-    if token and chat_ids:
-        start_scheduler(token, tuple(chat_ids), template, send_image, style)
 
     # ---- Header ----
     st.title("🪔 ನಿತ್ಯ ಪಂಚಾಂಗ")
 
-    # ---- Date navigation ----
-    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
-    if c1.button("◀ ಹಿಂದಿನ", use_container_width=True):
+    # ---- Date navigation (one compact row) ----
+    c1, c2, c3, c4 = st.columns(4)
+    if c1.button("◀ ಹಿಂದೆ", use_container_width=True):
         st.session_state["sel_date"] = clamp(st.session_state["sel_date"] - dt.timedelta(days=1))
         st.rerun()
     if c2.button("ಇಂದು", use_container_width=True):
@@ -452,7 +517,7 @@ def main():
     if c3.button("ನಾಳೆ", use_container_width=True):
         st.session_state["sel_date"] = clamp(today + dt.timedelta(days=1))
         st.rerun()
-    if c4.button("ಮುಂದಿನ ▶", use_container_width=True):
+    if c4.button("ಮುಂದೆ ▶", use_container_width=True):
         st.session_state["sel_date"] = clamp(st.session_state["sel_date"] + dt.timedelta(days=1))
         st.rerun()
 
@@ -464,46 +529,83 @@ def main():
         format="DD/MM/YYYY",
     )
 
+    # ---- Template choice (always visible, one tap) ----
+    tpl_name = st.radio(
+        "ಟೆಂಪ್ಲೇಟ್",
+        list(TEMPLATES.keys()),
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    template = TEMPLATES[tpl_name]
+
+    # ---- Advanced settings (collapsed) ----
+    with st.expander("⚙️ ಇನ್ನಷ್ಟು ಸೆಟ್ಟಿಂಗ್ಸ್"):
+        show_year = st.toggle("ವರ್ಷ ತೋರಿಸಿ", value=True)
+        style_name = st.radio("ಚಿತ್ರದ ಶೈಲಿ", list(STYLES.keys()), horizontal=True)
+        style = STYLES[style_name]
+        bg_file = st.file_uploader(
+            "ಹಿನ್ನೆಲೆ ಚಿತ್ರ ಬದಲಿಸಿ (ಐಚ್ಛಿಕ)", type=["jpg", "jpeg", "png", "webp"]
+        )
+        bg_bytes = bg_file.getvalue() if bg_file else None
+        if not bg_bytes and poster.find_bg() is None:
+            st.warning(
+                "ಹಿನ್ನೆಲೆ ಚಿತ್ರ ಸಿಕ್ಕಿಲ್ಲ. `assets/background.jpg` ಎಂದು ಸೇರಿಸಿ ಅಥವಾ ಇಲ್ಲಿ ಅಪ್‌ಲೋಡ್ ಮಾಡಿ."
+            )
+
+        st.markdown("---")
+        st.markdown("**📨 Telegram**")
+        send_image = st.toggle("ಸ್ವಯಂ ಸಂದೇಶದೊಂದಿಗೆ ಚಿತ್ರವನ್ನೂ ಕಳುಹಿಸಿ", value=True)
+        chat_raw = st.text_area(
+            "Chat ID(ಗಳು)",
+            value=get_secret("TELEGRAM_CHAT_ID"),
+            help="ಒಂದಕ್ಕಿಂತ ಹೆಚ್ಚು ಇದ್ದರೆ ಕಾಮಾ (,) ಬಳಸಿ ಬೇರ್ಪಡಿಸಿ.",
+            height=80,
+        )
+        chat_ids = parse_ids(chat_raw)
+        if token:
+            st.caption("✅ Bot token ಸೆಟ್ ಆಗಿದೆ (secrets)")
+        else:
+            st.warning("TELEGRAM_BOT_TOKEN ಸೆಟ್ ಮಾಡಿಲ್ಲ. Secrets ನಲ್ಲಿ ಸೇರಿಸಿ.")
+        st.caption(
+            f"🕙 ಪ್ರತಿದಿನ ರಾತ್ರಿ {SEND_HOUR}:00 IST ಗೆ ನಾಳೆಯ ಪಂಚಾಂಗ ಸ್ವಯಂಚಾಲಿತವಾಗಿ "
+            "ಕಳುಹಿಸಲಾಗುತ್ತದೆ. ಮೊದಲು ಬೋಟ್ "
+            "(`t.me/surya_panchanga_bot`) ನಲ್ಲಿ **Start** ಒತ್ತಿ."
+        )
+
+    if token and chat_ids:
+        start_scheduler(token, tuple(chat_ids), template, send_image, style)
+
     row = rows.get(selected.isoformat())
     if not row:
         st.warning(f"⚠️ {selected.strftime('%d-%m-%Y')} ರ ದತ್ತಾಂಶ ಲಭ್ಯವಿಲ್ಲ.")
         return
 
-    tab_view, tab_img, tab_share = st.tabs(
-        ["📖 ಪಂಚಾಂಗ", "🖼️ ಚಿತ್ರ (Image)", "📤 ಹಂಚಿಕೊಳ್ಳಿ (Text)"]
-    )
+    tab_view, tab_img, tab_share = st.tabs(["📖 ಪಂಚಾಂಗ", "🖼️ ಚಿತ್ರ", "📤 ಸಂದೇಶ"])
 
+    # ---------------- Card view ----------------
     with tab_view:
         st.markdown(render_card(row, template, show_year), unsafe_allow_html=True)
 
+    # ---------------- Poster image + direct Share ----------------
     with tab_img:
         png = cached_poster(row["date"], template, show_year, style, bg_bytes)
         st.image(png, use_container_width=True)
-        i1, i2 = st.columns(2)
-        i1.download_button(
-            "⬇️ PNG ಡೌನ್‌ಲೋಡ್ (WhatsApp ಗೆ ಹಂಚಿ)",
-            data=png,
-            file_name=f"panchanga_{row['date']}.png",
-            mime="image/png",
-            use_container_width=True,
-            type="primary",
-        )
+
+        # One big Share button -> opens WhatsApp / Telegram / any app on the phone
+        share_button(png, f"panchanga_{row['date']}.png")
+
         if token and chat_ids:
-            if i2.button("🚀 ಚಿತ್ರವನ್ನು Telegram ಗೆ ಕಳುಹಿಸಿ", use_container_width=True):
+            if st.button("🚀 ಚಿತ್ರವನ್ನು Telegram ಗೆ ಕಳುಹಿಸಿ", use_container_width=True):
                 for cid in chat_ids:
                     ok, msg = send_telegram_photo(png, token, cid, caption=row["date"])
                     (st.success if ok else st.error)(f"{cid}: {msg}")
-        else:
-            i2.caption("Telegram ಗೆ ಕಳುಹಿಸಲು ಸೈಡ್‌ಬಾರ್‌ನಲ್ಲಿ Chat ID ನೀಡಿ.")
 
+    # ---------------- Text share ----------------
     with tab_share:
         wa_text = render_message(row, template, "wa", show_year)
         tg_text = render_message(row, template, "tg", show_year)
 
-        st.caption("ಕೆಳಗಿನ ಸಂದೇಶವನ್ನು ಬಲ ಮೂಲೆಯ 📋 ಬಟನ್‌ನಿಂದ ಕಾಪಿ ಮಾಡಬಹುದು.")
-        st.code(wa_text, language=None, wrap_lines=True)
-
-        s1, s2, s3 = st.columns(3)
+        s1, s2 = st.columns(2)
         s1.link_button(
             "🟢 WhatsApp",
             "https://wa.me/?text=" + urllib.parse.quote(wa_text),
@@ -514,20 +616,12 @@ def main():
             "https://t.me/share/url?url=%20&text=" + urllib.parse.quote(wa_text),
             use_container_width=True,
         )
-        s3.download_button(
-            "💾 .txt",
-            data=wa_text,
-            file_name=f"panchanga_{row['date']}.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
 
-        st.markdown("---")
-        st.subheader("🚀 Bot ಮೂಲಕ ಕಳುಹಿಸಿ")
-        if not token or not chat_ids:
-            st.info("ಸೈಡ್‌ಬಾರ್‌ನಲ್ಲಿ Chat ID ನಮೂದಿಸಿ ಮತ್ತು Bot Token secrets ನಲ್ಲಿ ಸೇರಿಸಿ.")
-        else:
-            if st.button("ಈ ದಿನದ ಪಂಚಾಂಗ ಕಳುಹಿಸಿ", type="primary", use_container_width=True):
+        st.caption("ಸಂದೇಶವನ್ನು ಬಲ ಮೂಲೆಯ 📋 ಬಟನ್‌ನಿಂದ ಕಾಪಿ ಮಾಡಬಹುದು.")
+        st.code(wa_text, language=None, wrap_lines=True)
+
+        if token and chat_ids:
+            if st.button("🚀 Bot ಮೂಲಕ ಕಳುಹಿಸಿ", type="primary", use_container_width=True):
                 with st.spinner("ಕಳುಹಿಸಲಾಗುತ್ತಿದೆ..."):
                     for cid, ok, msg in send_to_all(tg_text, token, chat_ids):
                         (st.success if ok else st.error)(f"{cid}: {msg}")
